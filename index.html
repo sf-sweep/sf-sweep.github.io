@@ -97,9 +97,13 @@ ul, ol { list-style: none; }
 .results li { border-top: 1px solid var(--rule); }
 .results li:first-child { border-top: 0; }
 .results button { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; min-height: 48px; padding: 10px 16px; border: 0; background: none; text-align: left; font-weight: 700; }
-.results button span { color: var(--ink-2); font-weight: 400; font-size: 13px; white-space: nowrap; }
+.results button span { max-width: 58%; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); font-weight: 400; font-size: 13px; white-space: nowrap; }
 .results button:active, .results button[aria-selected="true"] { background: var(--surface-2); }
 .results .note { padding: 10px 16px; color: var(--ink-2); font-size: 13px; }
+.results .rl { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results mark { background: none; color: inherit; font-weight: 800; }
+@media (hover: hover) { .results button:hover { background: var(--surface-2); } }
+.results .note .linkbtn { min-height: 0; padding: 0; border: 0; background: none; color: var(--ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; display: inline; width: auto; }
 .when { grid-column: 1 / -1; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border: 0; border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); font-size: 14px; }
 .chip b { font-weight: 800; }
@@ -283,11 +287,11 @@ ul, ol { list-style: none; }
 <div class="top">
   <form class="search" id="searchForm" role="search">
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="6"></circle><path d="M13 13l5 5"></path></svg>
-    <input id="q" type="search" placeholder="Address, street or intersection" aria-label="Find an address, street or intersection" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
+    <input id="q" type="search" placeholder="Address, street or intersection" aria-label="Find an address, street, intersection or neighborhood" role="combobox" aria-autocomplete="list" aria-controls="results" aria-expanded="false" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
     <button type="button" class="iconbtn" id="qClear" aria-label="Clear search" hidden>&times;</button>
   </form>
   <button type="button" class="iconbtn round" id="aboutBtn" aria-label="About this map and its data">i</button>
-  <ul class="results" id="results" hidden></ul>
+  <ul class="results" id="results" role="listbox" aria-label="Search results" hidden></ul>
   <div class="when" id="when">
     <button type="button" class="chip" id="whenBtn" aria-expanded="false" aria-controls="whenPanel">Parking <b id="whenLabel">now</b></button>
     <div class="whenpanel" id="whenPanel" hidden>
@@ -1363,34 +1367,106 @@ if (typeof module !== 'undefined') module.exports = Sweep;
   }
 
   /* ---------- search ---------- */
-  var ABBR = { street: 'st', avenue: 'ave', boulevard: 'blvd', drive: 'dr', place: 'pl', court: 'ct', terrace: 'ter', road: 'rd', highway: 'hwy', lane: 'ln', circle: 'cir', alley: 'aly' };
+  /* Matching is forgiving: street types and spelled-out numbers are normalised ('Third Street' = '3rd st'),
+     spaces and apostrophes don't matter ('o farrell', 'vanness'), a few old names work ('Army St'), and a
+     near miss still matches when nothing better does ('folsum', 'mcalister'). */
+  var ABBR = { street: 'st', str: 'st', avenue: 'ave', av: 'ave', boulevard: 'blvd', drive: 'dr', place: 'pl', court: 'ct', terrace: 'ter', road: 'rd',
+    highway: 'hwy', lane: 'ln', circle: 'cir', alley: 'aly', plaza: 'plz', parkway: 'pkwy', expressway: 'expy' };
+  var TYPES = { st: 1, ave: 1, blvd: 1, dr: 1, pl: 1, ct: 1, ter: 1, rd: 1, hwy: 1, ln: 1, cir: 1, aly: 1, way: 1, plz: 1, walk: 1, row: 1, loop: 1, pkwy: 1, expy: 1 };
+  var ORDW = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth',
+    'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth'], TENS = { twenty: 20, thirty: 30, forty: 40 }, TENTH = { twentieth: 20, thirtieth: 30, fortieth: 40 };
+  var ALIAS = { army: 'cesar chavez', mlk: 'martin luther king jr', jfk: 'john f kennedy', 's van ness': 'south van ness', 'so van ness': 'south van ness', divis: 'divisadero' };
+  function ordinal(n) { var t = n % 100; return n + (t > 10 && t < 14 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'); }
   function norm(s) {
-    return s.toLowerCase().replace(/[.,']/g, '').replace(/\b0+(?=\d)/g, '').split(/\s+/).map(function (w) { return ABBR[w] || w; }).join(' ').trim();
+    var w = s.toLowerCase().replace(/[.,'’]/g, '').replace(/-/g, ' ').split(/\s+/).filter(Boolean), out = [];
+    for (var k = 0; k < w.length; k++) {
+      var x = w[k], o = ORDW.indexOf(x), o2 = k + 1 < w.length ? ORDW.indexOf(w[k + 1]) : -1;
+      if (TENS[x] && o2 >= 0 && o2 < 9) { out.push(ordinal(TENS[x] + o2 + 1)); k++; continue; }
+      if (TENTH[x]) { out.push(ordinal(TENTH[x])); continue; }
+      if (o >= 0) { out.push(ordinal(o + 1)); continue; }
+      x = x.replace(/^0+(?=\d)/, '');
+      out.push(ABBR[x] || x);
+    }
+    var q = out.join(' ');
+    if (/^st [a-z]{2}/.test(q)) q = 'saint' + q.slice(2);          // 'St Francis' -> Saint Francis
+    for (var a in ALIAS) if (q === a || q.indexOf(a + ' ') === 0) { q = ALIAS[a] + q.slice(a.length); break; }
+    return q;
   }
-  var IDX = NAMES.map(function (n, i) { return { i: i, n: n, k: norm(n), lines: [] }; });
+  function compact(s) { return s.replace(/ /g, ''); }
+  function entry(n) { var k = norm(n); return { n: n, k: k, c: compact(k), lines: [] }; }
+  var IDX = NAMES.map(function (n, i) { var e = entry(n); e.i = i; return e; });
   D.bn.forEach(function (ni, ln) { IDX[ni].lines.push(ln); });
-  function rank(k, q) { if (k === q) return 0; if (k.indexOf(q) === 0) return 1; if (k.indexOf(' ' + q) >= 0) return 2; return k.indexOf(q) >= 0 ? 3 : -1; }
-  function findStreets(q, max) {
-    var out = [];
-    if (!q) return out;
-    IDX.forEach(function (s) { var r = rank(s.k, q); if (r >= 0) out.push([r, -s.lines.length, s]); });
-    out.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
-    return out.slice(0, max).map(function (x) { return x[2]; });
+  var STRK = STRS.map(function (n) { return n ? entry(n) : null; });
+  var HOODS = D.hoods.map(function (h) { var e = entry(h[0].replace(/\s*\n\s*/g, ' ')); e.at = [LON0 + h[1] / 1e5, LAT0 + h[2] / 1e5]; return e; });
+  function rank(e, q, qc) {                       // 0 exact .. 3 anywhere inside, -1 no match
+    if (e.k === q) return 0;
+    if (e.k.indexOf(q) === 0) return 1;
+    if (e.c.indexOf(qc) === 0) return 1.5;
+    if (e.k.indexOf(' ' + q) >= 0) return 2;
+    return e.k.indexOf(q) >= 0 || (qc.length > 3 && e.c.indexOf(qc) >= 0) ? 3 : -1;
   }
+  function osa(a, b, cap) {                       // edit distance with swaps, giving up past cap
+    var m = a.length, n = b.length, prev2 = null, prev = [], cur, i, j;
+    if (Math.abs(m - n) > cap) return cap + 1;
+    for (j = 0; j <= n; j++) prev[j] = j;
+    for (i = 1; i <= m; i++) {
+      cur = [i];
+      var lo = i;
+      for (j = 1; j <= n; j++) {
+        var c = a[i - 1] === b[j - 1] ? 0 : 1, v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c);
+        if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1);
+        cur[j] = v; if (v < lo) lo = v;
+      }
+      if (lo > cap) return cap + 1;
+      prev2 = prev; prev = cur;
+    }
+    return prev[n];
+  }
+  function fuzzy(e, qc) {                         // typo distance between the query and the start of a name
+    var cap = qc.length < 8 ? 1 : 2, best = cap + 1;
+    for (var d = -1; d <= 1; d++) best = Math.min(best, osa(qc, e.c.slice(0, qc.length + d), cap));
+    return best <= cap ? best : -1;
+  }
+  function match(list, q, max, weight) {          // [[score, tiebreak, entry]] best first
+    var out = [], qc = compact(q), core = q.replace(/ (\S+)$/, function (m, t) { return TYPES[t] ? '' : m; });
+    if (!q) return out;
+    list.forEach(function (e) { if (!e) return; var r = rank(e, q, qc); if (r >= 0) out.push([r, -weight(e), e]); });
+    if (!out.length && core !== q) {             // 'Folsom Ave' -> Folsom St, 'Geary St' -> Geary Blvd
+      var cc = compact(core);
+      list.forEach(function (e) { if (!e) return; var r = rank(e, core, cc); if (r >= 0 && r < 3) out.push([r + 0.5, -weight(e), e]); });
+    }
+    if (!out.some(function (x) { return x[0] <= 2; }) && qc.length >= 4 && !/^\d/.test(qc)) {   // typos: only when nothing else fits
+      var have = {};
+      out.forEach(function (x) { have[x[2].k] = 1; });
+      list.forEach(function (e) { if (!e || have[e.k]) return; var f = fuzzy(e, qc); if (f >= 0) out.push([4 + f, -weight(e), e]); });
+    }
+    out.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    return out.slice(0, max);
+  }
+  function findStreets(q, max) { return match(IDX, q, max, function (e) { return e.lines.length; }).map(function (x) { return x[2]; }); }
   function findCrossings(a, b, seen, out) {
+    var bc = compact(b), ac = compact(a);
     findStreets(a, 6).forEach(function (s) {
       s.lines.forEach(function (ln) {
         [[D.bf[ln], 0], [D.bt[ln], 1]].forEach(function (p) {
-          var cn = STRS[p[0]], r = cn ? rank(norm(cn), b) : -1;
+          var ce = STRK[p[0]], r = ce ? rank(ce, b, bc) : -1;
           if (r < 0 || r > 2) return;
-          var key = [s.n, cn].sort().join('|');
+          var key = [s.n, ce.n].sort().join('|');
           if (seen[key]) return;
           seen[key] = 1;
-          var c = LINES[ln];
-          out.push({ r: r + rank(s.k, a), label: s.n + ' & ' + cn, sub: 'corner', at: p[1] ? c[c.length - 1] : c[0] });
+          var c = LINES[ln], ra = rank(s, a, ac);
+          out.push({ r: r + (ra < 0 ? 4 : ra), label: s.n + ' & ' + ce.n, sub: 'Corner', at: p[1] ? c[c.length - 1] : c[0] });
         });
       });
     });
+  }
+  function hoodOf(s) {                            // the neighborhood a short street sits in, to tell same-name streets apart
+    if (s.lines.length > 14) return '';
+    var x = 0, y = 0, n = 0, best = '', bd = Infinity;
+    s.lines.forEach(function (ln) { LINES[ln].forEach(function (c) { x += c[0]; y += c[1]; n++; }); });
+    x /= n; y /= n;
+    HOODS.forEach(function (h) { var d = Math.hypot((h.at[0] - x) * MX, (h.at[1] - y) * MY); if (d < bd) { bd = d; best = h.n; } });
+    return bd < 1500 ? best : '';
   }
   /* House numbers: the city's address range on each side of each block (D.ad, 10 chars per line, see assemble.py) */
   var AD = D.ad || '';
@@ -1436,52 +1512,129 @@ if (typeof module !== 'undefined') module.exports = Sweep;
     var f = len[k] > len[k - 1] ? (want - len[k - 1]) / (len[k] - len[k - 1]) : 0;
     return [coords[k - 1][0] + f * (coords[k][0] - coords[k - 1][0]), coords[k - 1][1] + f * (coords[k][1] - coords[k - 1][1])];
   }
+  function streetItem(s) {
+    var h = hoodOf(s), b = s.lines.length + (s.lines.length === 1 ? ' block' : ' blocks');
+    return { label: s.n, sub: h ? h + ' · ' + b : b, street: s };
+  }
   function search(raw) {
-    var q = raw.trim(), items = [], note = '';
-    if (q.length < 2) return { items: items, note: note };
+    var q = raw.trim(), items = [], note = '', marks = [];
+    if (q.length < 2) return { items: items, note: note, marks: marks };
+    if (/^\d+[a-z]?$/i.test(q)) return { items: items, note: 'Add the street name, like ' + q + ' Folsom St.', marks: marks };
     var m = /^(\d+)[a-z]?(?:-\d+)?\s+(.*[a-z].*)$/i.exec(q.replace(/\s*(?:#|\bapt\b|\bunit\b|\bste\b|\bsuite\b).*$/i, '').replace(/,.*$/, ''));
+    if (m && TYPES[norm(m[2])]) { q = ordinal(+m[1]) + ' ' + m[2]; m = null; }   // '3 st' means 3rd St
     if (m && !/[&@\/+]|\band\b|\bat\b/i.test(m[2])) {
       items = findAddress(+m[1], norm(m[2]));
-      if (items.length) return { items: items, note: '' };
+      if (items.length) return { items: items, note: '', marks: [m[1]].concat(wordsOf(m[2])) };
       q = m[2]; note = 'No ' + m[1] + ' in the city’s address ranges for that street. Pick the street, then tap your block.';
     }
-    var parts = q.split(/\s*(?:&|@|\/|\+|\band\b|\bat\b)\s*/i).filter(Boolean);
+    var parts = q.split(/\s*(?:&|@|\/|\+|\band\b|\bat\b)\s*/i).filter(Boolean), xs = [], seen = {};
     if (parts.length >= 2) {
-      var a = norm(parts[0]), b = norm(parts[1]), seen = {}, xs = [];
+      var a = norm(parts[0]), b = norm(parts[1]);
       if (a && b) { findCrossings(a, b, seen, xs); findCrossings(b, a, seen, xs); }
-      xs.sort(function (x, y) { return x.r - y.r; });
-      items = xs.slice(0, 6);
     }
-    findStreets(norm(parts[0] || q), items.length ? 3 : 7).forEach(function (s) {
-      items.push({ label: s.n, sub: s.lines.length + (s.lines.length === 1 ? ' block' : ' blocks'), street: s });
+    var nq = norm(parts[0] || q), streets = match(IDX, nq, 7, function (e) { return e.lines.length; });
+    var hoods = parts.length < 2 ? match(HOODS, nq, 2, function () { return 0; }).filter(function (x) { return x[0] <= 2; }) : [];
+    hoods.forEach(function (h) { h[0] += 1.1; });  // a street of that name first: 'Mission' is Mission St, then the Mission
+    var words = nq.split(' ');
+    if (parts.length < 2 && words.length >= 2 && !(streets.length && streets[0][0] <= 1.5) && !(hoods.length && hoods[0][0] <= 2.6)) {
+      for (var k = 1; k < words.length; k++) {     // 'mission 16th': two streets with no 'and' between them
+        var a2 = words.slice(0, k).join(' '), b2 = words.slice(k).join(' ');
+        findCrossings(a2, b2, seen, xs); findCrossings(b2, a2, seen, xs);
+      }
+    }
+    xs.sort(function (x, y) { return x.r - y.r; });
+    if (xs.length && xs[0].r < 4) xs = xs.filter(function (x) { return x.r < 4; });   // drop corners found only through a typo
+    items = xs.slice(0, 6);
+    streets.slice(0, items.length ? 3 : 7).forEach(function (x, j) {
+      if (hoods.length && hoods[0][0] < x[0]) items.push(hoodItem(hoods.shift()[2]));
+      items.push(streetItem(x[2]));
     });
-    if (!items.length) note = 'No street by that name in the city data.';
-    return { items: items, note: note };
+    hoods.forEach(function (h) { items.push(hoodItem(h[2])); });
+    marks = wordsOf(q);
+    if (!items.length) note = 'No street or neighborhood by that name in the city data.';
+    return { items: items.slice(0, 8), note: note, marks: marks };
   }
+  function wordsOf(s) { return s.split(/\s*(?:&|@|\/|\+|\band\b|\bat\b)\s*|\s+/i).filter(function (w) { return w && (w.length > 1 || /\d/.test(w)); }); }
+  function hoodItem(h) { return { label: h.n, sub: 'Neighborhood', at: h.at, hood: true }; }
   var found = [], pin = null;
   function dropPin(at, n) {                       // the searched address, as a numbered pin on its curb
     if (pin) { pin.remove(); pin = null; }
     if (at && map) pin = new maplibregl.Marker({ element: el('b', { 'class': 'addrpin', 'aria-label': 'Address ' + n }, String(n)), anchor: 'bottom' }).setLngLat(at).addTo(map);
   }
-  function showResults() {
-    var r = search($('q').value), ul = $('results');
-    found = r.items;
+  function marked(label, marks) {                 // the label with the typed parts in bold
+    var spans = [], low = label.toLowerCase();
+    (marks || []).forEach(function (m) {
+      m = (m || '').trim().toLowerCase();
+      if (!m) return;
+      var a = low.indexOf(m);
+      while (a > 0 && /[a-z0-9]/.test(low.charAt(a - 1))) a = low.indexOf(m, a + 1);   // only from the start of a word
+      if (a >= 0 && !spans.some(function (s) { return a < s[1] && a + m.length > s[0]; })) spans.push([a, a + m.length]);
+    });
+    spans.sort(function (x, y) { return x[0] - y[0]; });
+    var f = el('b', { 'class': 'rl' }), at = 0;
+    spans.forEach(function (s) { f.appendChild(document.createTextNode(label.slice(at, s[0]))); f.appendChild(el('mark', null, label.slice(s[0], s[1]))); at = s[1]; });
+    f.appendChild(document.createTextNode(label.slice(at)));
+    return f;
+  }
+  var act = -1;
+  function setAct(i) {                            // keyboard: the highlighted result
+    var bs = $('results').querySelectorAll('button[role=option]');
+    act = bs.length ? (i + bs.length) % bs.length : -1;
+    Array.prototype.forEach.call(bs, function (b, k) { b.setAttribute('aria-selected', k === act ? 'true' : 'false'); });
+    if (act >= 0) { bs[act].scrollIntoView({ block: 'nearest' }); $('q').setAttribute('aria-activedescendant', bs[act].id); }
+    else $('q').removeAttribute('aria-activedescendant');
+  }
+  function listResults(items, note, marks, recent) {
+    var ul = $('results');
+    found = items;
     ul.textContent = '';
-    r.items.forEach(function (it, i) {
-      var li = el('li'), b = el('button', { type: 'button' });
-      b.appendChild(document.createTextNode(it.label)); b.appendChild(el('span', null, it.sub));
+    items.forEach(function (it, i) {
+      var li = el('li'), b = el('button', { type: 'button', role: 'option', id: 'res' + i, 'aria-selected': 'false' });
+      b.appendChild(marked(it.label, marks)); b.appendChild(el('span', null, it.sub));
+      b.onmousedown = function (e) { e.preventDefault(); };   // keep the keyboard up on phones until the pick
       b.onclick = function () { pick(i); };
       li.appendChild(b); ul.appendChild(li);
     });
-    if (r.note) ul.appendChild(el('li', { 'class': 'note' }, r.note));
-    ul.hidden = !r.items.length && !r.note;
-    $('qClear').hidden = !$('q').value;
+    if (recent && items.length) {
+      var li = el('li', { 'class': 'note' }), c = el('button', { type: 'button', 'class': 'linkbtn' }, 'Clear recent searches');
+      c.onclick = function () { store.set('recent', null); listResults([], '', [], false); $('q').focus(); };
+      li.appendChild(c); ul.appendChild(li);
+    }
+    if (note) ul.appendChild(el('li', { 'class': 'note' }, note));
+    ul.hidden = !items.length && !note;
+    $('q').setAttribute('aria-expanded', ul.hidden ? 'false' : 'true');
+    act = -1; $('q').removeAttribute('aria-activedescendant');
+  }
+  function showResults() {
+    var v = $('q').value;
+    $('qClear').hidden = !v;
+    if (!v.trim()) {                              // empty box: recent searches
+      var rec = store.get('recent') || [];
+      listResults(rec.map(function (x) { return { label: x.l, sub: 'Recent', recent: true, hood: !!x.h }; }), '', [], true);
+      return;
+    }
+    var r = search(v);
+    listResults(r.items, r.note, r.marks, false);
+  }
+  function remember(it) {
+    var rec = (store.get('recent') || []).filter(function (x) { return x.l !== it.label; });
+    rec.unshift({ l: it.label, h: it.hood ? 1 : 0 });
+    store.set('recent', rec.slice(0, 5));
   }
   function pick(i) {
     var it = found[i];
     if (!it || !map) return;
+    if (it.recent) {                              // look a recent search up again: the data may have moved on
+      var again = search(it.label).items.filter(function (x) { return x.label === it.label && !!x.hood === it.hood; });
+      if (!again.length) { listResults([], 'That place is no longer in the city data.', [], false); return; }
+      found = again;
+      return pick(0);
+    }
+    remember(it);
     $('results').hidden = true;
+    $('q').setAttribute('aria-expanded', 'false');
     $('q').value = it.label;
+    $('qClear').hidden = false;
     $('q').blur();
     closeSheets();
     var hl = map.getSource('sf-hl');
@@ -1501,7 +1654,7 @@ if (typeof module !== 'undefined') module.exports = Sweep;
       map.fitBounds(b, { padding: { top: 130, bottom: 170, left: 36, right: 36 }, maxZoom: 16.6, duration: reduced ? 0 : 700 });
     } else {
       if (hl) hl.setData(fc([]));
-      go({ center: it.at, zoom: 17.3, offset: [0, 20] });
+      go({ center: it.at, zoom: it.hood ? 15.2 : 17.3, offset: [0, 20] });
     }
   }
 
@@ -1594,8 +1747,19 @@ if (typeof module !== 'undefined') module.exports = Sweep;
   function wire() {
     var q = $('q');
     q.addEventListener('input', showResults);
-    q.addEventListener('focus', function () { if (q.value) showResults(); });
-    $('searchForm').addEventListener('submit', function (e) { e.preventDefault(); showResults(); if (found.length) pick(0); });
+    q.addEventListener('focus', showResults);
+    q.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      if ($('results').hidden) showResults();
+      setAct(act < 0 ? (e.key === 'ArrowDown' ? 0 : -1) : act + (e.key === 'ArrowDown' ? 1 : -1));
+    });
+    $('searchForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var keep = !$('results').hidden && act >= 0 ? act : -1;
+      if (keep < 0) showResults();
+      if (found.length) pick(keep < 0 ? 0 : keep);
+    });
     $('qClear').onclick = function () {
       q.value = ''; showResults(); q.focus();
       var hl = map && map.getSource('sf-hl');
